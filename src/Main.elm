@@ -148,6 +148,7 @@ type alias Model =
     , nerds : Bool
     , flipFrom : Maybe Int
     , bustPicking : Maybe Int
+    , discards : List Kind
     , confirmNew : Bool
     , winnerShown : Bool
     , finished : Bool
@@ -181,6 +182,7 @@ init flags =
       , nerds = False
       , flipFrom = Nothing
       , bustPicking = Nothing
+      , discards = []
       , confirmNew = False
       , winnerShown = False
       , finished = False
@@ -340,26 +342,66 @@ resetPlayers players =
 -- CARD COUNTING
 
 
-leftCount : List Player -> Kind -> Int
-leftCount players kind =
+deckTotal : Int
+deckTotal =
+    List.sum (List.map deckCount allKinds)
+
+
+countOf : Kind -> List Kind -> Int
+countOf kind cards =
+    List.length (List.filter (\c -> c == kind) cards)
+
+
+{-| Cards in front of players this round, busted hands included.
+-}
+seenThisRound : Model -> List Kind
+seenThisRound model =
+    List.concatMap seenCards model.players
+
+
+{-| True once the draw pile has run out and the earlier rounds' discards
+have been shuffled back in. Cards in front of players stay out of that shuffle.
+-}
+pileReshuffled : Model -> Bool
+pileReshuffled model =
+    List.length model.discards + List.length (seenThisRound model) >= deckTotal
+
+
+{-| True only if a card was actually drawn after the pile ran dry, which is the
+moment the earlier discards really get shuffled back in. Used at the end of a round.
+-}
+reshuffleHappened : Model -> Bool
+reshuffleHappened model =
+    List.length model.discards + List.length (seenThisRound model) > deckTotal
+
+
+{-| Copies of a card still in the draw pile.
+
+Before a reshuffle the pile is the deck minus earlier rounds' discards minus this
+round's cards. After one, every card that is not in front of a player is in the pile.
+
+-}
+leftCount : Model -> Kind -> Int
+leftCount model kind =
     let
-        seen =
-            players
-                |> List.concatMap seenCards
-                |> List.filter (\c -> c == kind)
-                |> List.length
+        inPlay =
+            countOf kind (seenThisRound model)
     in
-    max 0 (deckCount kind - seen)
+    if pileReshuffled model then
+        max 0 (deckCount kind - inPlay)
+
+    else
+        max 0 (deckCount kind - countOf kind model.discards - inPlay)
 
 
-deckLeft : List Player -> List ( Kind, Int )
-deckLeft players =
-    List.map (\k -> ( k, leftCount players k )) allKinds
+deckLeft : Model -> List ( Kind, Int )
+deckLeft model =
+    List.map (\k -> ( k, leftCount model k )) allKinds
 
 
-unseenTotal : List Player -> Int
-unseenTotal players =
-    deckLeft players |> List.map Tuple.second |> List.sum
+unseenTotal : Model -> Int
+unseenTotal model =
+    deckLeft model |> List.map Tuple.second |> List.sum
 
 
 cardValue : Int -> Kind -> Float
@@ -397,11 +439,11 @@ type alias NextStats =
     }
 
 
-nextStats : List Player -> Player -> Maybe NextStats
-nextStats players p =
+nextStats : Model -> Player -> Maybe NextStats
+nextStats model p =
     let
         deck =
-            deckLeft players
+            deckLeft model
 
         unseen =
             List.sum (List.map Tuple.second deck)
@@ -524,14 +566,14 @@ flipGo draws deck held numSum =
 
 {-| ( bust chance over three draws, average points if they survive )
 -}
-flipThreeStats : List Player -> Player -> ( Float, Float )
-flipThreeStats players p =
+flipThreeStats : Model -> Player -> ( Float, Float )
+flipThreeStats model p =
     let
         nums =
             List.filterMap cardNumber p.hand
 
         ( survive, gainSum ) =
-            flipGo 3 (deckLeft players) (Set.fromList nums) (List.sum nums)
+            flipGo 3 (deckLeft model) (Set.fromList nums) (List.sum nums)
     in
     if survive <= 0 then
         ( 1, 0 )
@@ -679,6 +721,15 @@ applyMsg msg model =
 
             else
                 let
+                    -- this round's cards go to the discard pile; if the pile was reshuffled
+                    -- mid-round, the old discards are already back in the draw pile
+                    nextDiscards =
+                        if reshuffleHappened model then
+                            seenThisRound model
+
+                        else
+                            model.discards ++ seenThisRound model
+
                     players =
                         List.map
                             (\p -> { p | total = p.total + handScore p, hand = [], busted = False, bustCard = Nothing })
@@ -695,6 +746,7 @@ applyMsg msg model =
 
                         else
                             model.round + 1
+                    , discards = nextDiscards
                     , openId = Nothing
                     , bustPicking = Nothing
                     , finished = over
@@ -710,6 +762,7 @@ applyMsg msg model =
         ConfirmNewGame ->
             { model
                 | players = resetPlayers model.players
+                , discards = []
                 , round = 1
                 , openId = Nothing
                 , flipFrom = Nothing
@@ -848,7 +901,7 @@ viewHeader model =
     let
         subtitle =
             if model.nerds then
-                "Round " ++ String.fromInt model.round ++ " · " ++ String.fromInt (unseenTotal model.players) ++ " of 94 cards unseen"
+                "Round " ++ String.fromInt model.round ++ " · " ++ String.fromInt (unseenTotal model) ++ " cards left in the pile"
 
             else
                 "Round " ++ String.fromInt model.round ++ " · first to " ++ String.fromInt winningScore ++ " wins"
@@ -982,7 +1035,7 @@ viewMiniStats model p =
         text ""
 
     else
-        case nextStats model.players p of
+        case nextStats model p of
             Nothing ->
                 text ""
 
@@ -1149,7 +1202,7 @@ pickButton model p n =
 leftLabel : Model -> Kind -> List (Html Msg)
 leftLabel model kind =
     if model.nerds then
-        [ span [ class "kl" ] [ text (String.fromInt (leftCount model.players kind) ++ " left") ] ]
+        [ span [ class "kl" ] [ text (String.fromInt (leftCount model kind) ++ " left") ] ]
 
     else
         []
@@ -1196,7 +1249,7 @@ bonusButton model p kind =
             List.member kind p.hand
 
         gone =
-            model.nerds && not held && leftCount model.players kind == 0
+            model.nerds && not held && leftCount model kind == 0
 
         cls =
             if held then
@@ -1231,7 +1284,7 @@ actionButton model p kind =
 
         sub =
             if model.nerds then
-                String.fromInt (leftCount model.players kind) ++ " left in deck"
+                String.fromInt (leftCount model kind) ++ " left in deck"
 
             else if used > 0 then
                 "used ×" ++ String.fromInt used
@@ -1267,7 +1320,7 @@ hintText model p =
             List.filterMap cardNumber p.hand
 
         lefts =
-            List.map (\n -> leftCount model.players (KNum n)) heldNums
+            List.map (\n -> leftCount model (KNum n)) heldNums
     in
     if List.isEmpty heldNums then
         "No numbers in " ++ p.name ++ "'s hand yet, so nothing can bust them."
@@ -1288,7 +1341,7 @@ viewNextPanel model p =
         div [ class "panel" ] [ div [ class "verdict" ] [ text (p.name ++ " is busted this round.") ] ]
 
     else
-        case nextStats model.players p of
+        case nextStats model p of
             Nothing ->
                 div [ class "panel" ] [ div [ class "verdict" ] [ text "No unseen cards left to count." ] ]
 
@@ -1361,6 +1414,9 @@ viewFlipSheet model =
                 -- count the Flip Three card itself as seen before working out odds
                 sim =
                     updatePlayer sourceId (\p -> { p | hand = p.hand ++ [ KFlip3 ] }) model.players
+
+                simModel =
+                    { model | players = sim }
             in
             div []
                 [ div [ class "scrim", onClick CloseFlip ] []
@@ -1368,15 +1424,15 @@ viewFlipSheet model =
                     [ div [ class "grabber" ] []
                     , div [ class "sheetTitle" ] [ text "Flip Three" ]
                     , div [ class "sheetSub" ] [ text "Who is it being played on? Odds cover all three draws." ]
-                    , div [ class "targets" ] (List.map (viewTarget sim) sim)
+                    , div [ class "targets" ] (List.map (viewTarget simModel) sim)
                     , div [ class "sheetSub" ] [ text "Gain is the average points from three safe cards. Pick a target to log the Flip Three and start entering their draws." ]
                     , button [ class "ghost wide", onClick CloseFlip ] [ text "Cancel" ]
                     ]
                 ]
 
 
-viewTarget : List Player -> Player -> Html Msg
-viewTarget sim p =
+viewTarget : Model -> Player -> Html Msg
+viewTarget simModel p =
     let
         handText =
             if p.busted then
@@ -1401,7 +1457,7 @@ viewTarget sim p =
     else
         let
             ( bust, gain ) =
-                flipThreeStats sim p
+                flipThreeStats simModel p
         in
         button [ class "target", onClick (PickTarget p.id) ]
             [ div [ class "targetTop" ]

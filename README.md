@@ -20,4 +20,4 @@ Upload `index.html` and `elm.js` to the same folder on your site. Nothing else i
 - Tapping a card you already logged takes it back (or tap its chip in the hand). Press Busted, then pick the card that busted that player: their round score drops to 0 and that card is counted as seen. Undo reverses a bust.
 - ×2 doubles number cards only. +2 to +10 are added after doubling.
 - Seven different numbers in a hand scores a +15 Flip 7 bonus.
-- Card counting assumes a full 94-card deck each round, using every hand logged this round (busted hands included).
+- Card counting follows the real pile: cards are not reshuffled between rounds. Each round's cards go to the discards, and only when the draw pile runs dry are the earlier rounds' discards shuffled back in (cards in front of players stay out). Log every hand each round to keep the count honest.
